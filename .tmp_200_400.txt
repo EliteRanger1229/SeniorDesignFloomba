@@ -1,0 +1,142 @@
+
+    def stop(self):
+        try:
+            self._stop_evt.set()
+            if self._client:
+                self._client.loop_stop()
+                self._client.disconnect()
+        except Exception:
+            pass
+
+    def enqueue(self, event):
+        # augment with drone_id
+        payload = dict(event)
+        payload.setdefault("drone_id", self.drone_id)
+        try:
+            self._q.put_nowait(payload)
+        except Exception:
+            # drop oldest to make room
+            try:
+                _ = self._q.get_nowait()
+                self._q.put_nowait(payload)
+            except Exception:
+                pass
+
+    def _worker(self):
+        backoff = 0.5
+        while not self._stop_evt.is_set():
+            try:
+                item = self._q.get(timeout=0.25)
+            except Exception:
+                continue
+            try:
+                topic = self.topic or f"drone/{self.drone_id}/events"
+                data = json.dumps(item, separators=(",", ":"))
+                if not self._connected_evt.wait(timeout=5):
+                    # not connected; requeue later
+                    time.sleep(min(backoff, 5))
+                    backoff = min(backoff * 2, 10)
+                    self.enqueue(item)
+                    continue
+                backoff = 0.5
+                if self._client:
+                    info = self._client.publish(topic, data, qos=self.qos)
+                    # Wait briefly for network I/O but do not block the detector
+                    info.wait_for_publish(2)
+            except Exception as e:
+                print(f"[mqtt] publish error: {e}")
+                # attempt later
+                self.enqueue(item)
+
+
+# ---------------------------
+# Person detection (OpenCV DNN)
+# ---------------------------
+net = cv2.dnn.readNetFromCaffe("MobileNetSSD_deploy.prototxt", "MobileNetSSD_deploy.caffemodel")
+cap = cv2.VideoCapture(0)  # or stream url
+
+CLASSES = [
+    "background",
+    "aeroplane",
+    "bicycle",
+    "bird",
+    "boat",
+    "bottle",
+    "bus",
+    "car",
+    "cat",
+    "chair",
+    "cow",
+    "diningtable",
+    "dog",
+    "horse",
+    "motorbike",
+    "person",
+    "pottedplant",
+    "sheep",
+    "sofa",
+    "train",
+    "tvmonitor",
+]
+
+
+def main():
+    # Start SSE server for the front-end
+    start_http_server()
+    print("SSE server running on http://localhost:8000 — open in a browser")
+
+    last_alert_ts = 0.0
+    alert_cooldown = 1.0  # seconds between alerts to the frontend
+
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+        h, w = frame.shape[:2]
+        blob = cv2.dnn.blobFromImage(cv2.resize(frame, (300, 300)), 0.007843, (300, 300), 127.5)
+        net.setInput(blob)
+        detections = net.forward()
+        person_found = False
+        top_conf = 0.0
+
+        for i in range(detections.shape[2]):
+            conf = float(detections[0, 0, i, 2])
+            cls = int(detections[0, 0, i, 1])
+            if conf > 0.4 and CLASSES[cls] == "person":
+                person_found = True
+                top_conf = max(top_conf, conf)
+                box = detections[0, 0, i, 3:7] * [w, h, w, h]
+                x1, y1, x2, y2 = map(int, box)
+                cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                cv2.putText(
+                    frame,
+                    f"person {conf:.2f}",
+                    (x1, y1 - 6),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5,
+                    (255, 255, 255),
+                    1,
+                )
+
+        # Throttle alert spam; only send when a person is present
+        now = time.time()
+        if person_found and (now - last_alert_ts) >= alert_cooldown:
+            last_alert_ts = now
+            broadcast_event(
+                {
+                    "type": "person_detected",
+                    "confidence": round(top_conf, 3),
+                    "ts": int(now),
+                }
+            )
+
+        cv2.imshow("d", frame)
+        if cv2.waitKey(1) & 0xFF == ord("q"):
+            break
+
+    cap.release()
+    cv2.destroyAllWindows()
+
+
+if __name__ == "__main__":
+    main()

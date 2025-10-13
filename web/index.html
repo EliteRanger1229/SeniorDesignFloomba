@@ -1,0 +1,140 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Person Detection Alert</title>
+    <style>
+      :root { --ok: #1b5e20; --warn: #b71c1c; --bg: #0f172a; --fg: #e2e8f0; }
+      body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; background: var(--bg); color: var(--fg); margin: 0; padding: 2rem; }
+      .card { max-width: 720px; margin: 0 auto; background: #111827; border: 1px solid #1f2937; border-radius: 12px; padding: 1.25rem 1.5rem; }
+      h1 { font-size: 1.25rem; margin: 0 0 0.5rem; }
+      .status { display: inline-flex; align-items: center; gap: 0.5rem; padding: 0.4rem 0.65rem; border-radius: 999px; font-weight: 600; }
+      .status.ok { background: #113b19; color: #d1fae5; border: 1px solid #1f7a2a; }
+      .status.alert { background: #3b1111; color: #fee2e2; border: 1px solid #7a1f1f; }
+      .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-top: 1rem; }
+      .box { background: #0b1220; border: 1px solid #111827; border-radius: 8px; padding: 0.75rem; min-height: 80px; }
+      code { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; color: #93c5fd; }
+      .muted { color: #9ca3af; }
+      .log { max-height: 240px; overflow: auto; }
+      .footer { margin-top: 1rem; font-size: 0.9rem; color: #9ca3af; }
+      a { color: #93c5fd; }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <h1>Person Detection Alerts</h1>
+      <div id="status" class="status ok">Waiting for detections…</div>
+
+      <div style="margin: 0.5rem 0 0.75rem; display:flex; align-items:center; gap:0.5rem;">
+        <label for="filter" class="muted">Filter by drone</label>
+        <select id="filter" style="background:#0b1220; color:#e2e8f0; border:1px solid #111827; border-radius:6px; padding:0.35rem 0.5rem;">
+          <option value="">All</option>
+        </select>
+      </div>
+
+      <div class="grid">
+        <div class="box">
+          <div class="muted">Last event (filtered)</div>
+          <div id="last">—</div>
+        </div>
+        <div class="box">
+          <div class="muted">Total alerts (filtered)</div>
+          <div id="count">0</div>
+        </div>
+      </div>
+
+      <div class="box log" style="margin-top:1rem">
+        <div class="muted">Event log</div>
+        <div id="log"></div>
+      </div>
+
+      <div class="footer">
+        Connected to <code>/events</code>. Keep this tab open to receive alerts.
+      </div>
+    </div>
+
+    <audio id="beep">
+      <source src="data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAgD4AAIA+AAABAAgAZGF0YQAAAAA=" type="audio/wav">
+    </audio>
+
+    <script>
+      const statusEl = document.getElementById('status');
+      const lastEl = document.getElementById('last');
+      const countEl = document.getElementById('count');
+      const logEl = document.getElementById('log');
+      const beep = document.getElementById('beep');
+      const filterEl = document.getElementById('filter');
+
+      let count = 0;
+      const drones = new Set();
+      function ensureDroneOption(id) {
+        if (!id || drones.has(id)) return;
+        drones.add(id);
+        const opt = document.createElement('option');
+        opt.value = id;
+        opt.textContent = id;
+        filterEl.appendChild(opt);
+      }
+
+      function setStatusAlert(conf) {
+        statusEl.className = 'status alert';
+        statusEl.textContent = `Person detected (conf ${conf})`;
+      }
+
+      function setStatusOk() {
+        statusEl.className = 'status ok';
+        statusEl.textContent = 'Waiting for detections…';
+      }
+
+      function log(msg) {
+        const div = document.createElement('div');
+        div.textContent = msg;
+        logEl.prepend(div);
+      }
+
+      // Connect to SSE endpoint
+      const es = new EventSource('/events');
+      es.onopen = () => {
+        setStatusOk();
+        log('Connected');
+      };
+      es.onerror = () => {
+        statusEl.className = 'status';
+        statusEl.textContent = 'Disconnected — retrying…';
+      };
+      es.onmessage = (e) => {
+        try {
+          const data = JSON.parse(e.data);
+          if (data && data.type === 'person_detected') {
+            const droneId = data.drone_id || 'unknown';
+            ensureDroneOption(droneId);
+            const selected = filterEl.value;
+            const ts = new Date((data.ts || Date.now()) * 1000);
+            // Always log with drone id
+            log(`[${ts.toLocaleTimeString()}] [drone:${droneId}] person_detected (conf ${data.confidence})`);
+            // Apply filter to UI counters/status
+            if (!selected || selected === droneId) {
+              count += 1;
+              setStatusAlert(data.confidence);
+              countEl.textContent = String(count);
+              lastEl.textContent = ts.toLocaleString();
+              try { beep.currentTime = 0; beep.play().catch(()=>{}); } catch (e) {}
+              clearTimeout(window.__okTimer);
+              window.__okTimer = setTimeout(setStatusOk, 1500);
+            }
+          }
+        } catch {}
+      };
+
+      // Reset counters when filter changes (keeps log intact)
+      filterEl.addEventListener('change', () => {
+        count = 0;
+        countEl.textContent = '0';
+        lastEl.textContent = '—';
+        setStatusOk();
+      });
+    </script>
+  </body>
+  </html>
+
