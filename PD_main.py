@@ -252,8 +252,106 @@ class MqttPublisher:
 # ---------------------------
 # Person detection (OpenCV DNN)
 # ---------------------------
-net = cv2.dnn.readNetFromCaffe("MobileNetSSD_deploy.prototxt", "MobileNetSSD_deploy.caffemodel")
-cap = cv2.VideoCapture(0)  # or stream url
+# Resolve model files relative to this script so it works regardless of CWD
+_BASE_DIR = os.path.dirname(__file__)
+_PROTOTXT = os.path.join(_BASE_DIR, "MobileNetSSD_deploy.prototxt")
+_CAFFEMODEL = os.path.join(_BASE_DIR, "MobileNetSSD_deploy.caffemodel")
+
+net = cv2.dnn.readNetFromCaffe(_PROTOTXT, _CAFFEMODEL)
+
+
+def _open_capture_from_env():
+    # CAMERA_SOURCE can be an integer index (e.g., "0"), a device path ("/dev/video0"),
+    # a file/stream URL, or a GStreamer pipeline string (for libcamera on Raspberry Pi).
+    src = os.getenv("CAMERA_SOURCE", "0").strip().lower()
+    cap = None
+
+    # DepthAI (OAK-D / OAK-D Lite) source
+    if src in {"depthai", "oak", "oakd", "oak-d", "oak-d-lite"}:
+        try:
+            import depthai as dai
+
+            class DepthAICapture:
+                def __init__(self):
+                    pipeline = dai.Pipeline()
+
+                    cam = pipeline.createColorCamera()
+                    # Map env to sensor resolution
+                    res = os.getenv("OAK_RGB_RES", "1080").strip().lower()
+                    res_map = {
+                        "720": dai.ColorCameraProperties.SensorResolution.THE_720_P,
+                        "1080": dai.ColorCameraProperties.SensorResolution.THE_1080_P,
+                        "4k": dai.ColorCameraProperties.SensorResolution.THE_4_K,
+                    }
+                    cam.setResolution(res_map.get(res, dai.ColorCameraProperties.SensorResolution.THE_1080_P))
+                    try:
+                        fps = int(float(os.getenv("OAK_FPS", os.getenv("FRAME_FPS", "30"))))
+                        if fps > 0:
+                            cam.setFps(fps)
+                    except Exception:
+                        pass
+
+                    # Output size to host
+                    try:
+                        vw = int(os.getenv("FRAME_WIDTH", "640"))
+                        vh = int(os.getenv("FRAME_HEIGHT", "480"))
+                    except Exception:
+                        vw, vh = 640, 480
+                    cam.setVideoSize(vw, vh)
+
+                    xout = pipeline.createXLinkOut()
+                    xout.setStreamName("video")
+                    cam.video.link(xout.input)
+
+                    self._device = dai.Device(pipeline)
+                    self._q = self._device.getOutputQueue(name="video", maxSize=4, blocking=False)
+
+                def read(self):
+                    msg = self._q.tryGet()
+                    if msg is None:
+                        return False, None
+                    frame = msg.getCvFrame()
+                    return True, frame
+
+                def release(self):
+                    try:
+                        self._device.close()
+                    except Exception:
+                        pass
+
+            return DepthAICapture()
+        except Exception as e:
+            print(f"[camera] DepthAI init failed: {e}. Falling back to OpenCV VideoCapture.")
+    try:
+        if src.isdigit():
+            cap = cv2.VideoCapture(int(src))
+        else:
+            # For GStreamer pipelines, pass CAP_GSTREAMER
+            if "!" in src:
+                cap = cv2.VideoCapture(src, cv2.CAP_GSTREAMER)
+            else:
+                cap = cv2.VideoCapture(src)
+    except Exception:
+        cap = cv2.VideoCapture(0)
+
+    # Optional capture properties
+    try:
+        w = int(os.getenv("FRAME_WIDTH", "0"))
+        h = int(os.getenv("FRAME_HEIGHT", "0"))
+        fps = float(os.getenv("FRAME_FPS", "0"))
+        if w > 0:
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, w)
+        if h > 0:
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, h)
+        if fps > 0:
+            cap.set(cv2.CAP_PROP_FPS, fps)
+    except Exception:
+        pass
+
+    return cap
+
+
+cap = _open_capture_from_env()
 
 CLASSES = [
     "background",
@@ -282,16 +380,22 @@ CLASSES = [
 
 def main():
     # Start SSE server for the front-end
-    start_http_server()
-    print("SSE server running on http://localhost:8000 — open in a browser")
+    http_host = os.getenv("HTTP_HOST", "0.0.0.0")
+    http_port = int(os.getenv("HTTP_PORT", "8000"))
+    start_http_server(http_host, http_port)
+    print(f"SSE server running on http://{http_host}:{http_port} — open in a browser on the same network")
 
     last_alert_ts = 0.0
     alert_cooldown = 1.0  # seconds between alerts to the frontend
 
+    show_window = os.getenv("SHOW_WINDOW", "0") == "1"
+
     while True:
         ret, frame = cap.read()
         if not ret:
-            break
+            # If camera temporarily fails, wait and retry
+            time.sleep(0.1)
+            continue
         h, w = frame.shape[:2]
         blob = cv2.dnn.blobFromImage(cv2.resize(frame, (300, 300)), 0.007843, (300, 300), 127.5)
         net.setInput(blob)
@@ -330,12 +434,16 @@ def main():
                 }
             )
 
-        cv2.imshow("d", frame)
-        if cv2.waitKey(1) & 0xFF == ord("q"):
-            break
+        if show_window:
+            cv2.imshow("person-detect", frame)
+            if cv2.waitKey(1) & 0xFF == ord("q"):
+                break
 
     cap.release()
-    cv2.destroyAllWindows()
+    try:
+        cv2.destroyAllWindows()
+    except Exception:
+        pass
 
 
 if __name__ == "__main__":

@@ -1,0 +1,38 @@
+[Unit]
+Description=Person Detection (OpenCV + SSE + MQTT) service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/SeniorDesignFloomba
+Environment=PYTHONUNBUFFERED=1
+# Networking/UI
+Environment=HTTP_HOST=0.0.0.0
+Environment=HTTP_PORT=8000
+# Camera defaults (USB webcam). For Pi Camera, set CAMERA_SOURCE to a libcamera pipeline.
+Environment=CAMERA_SOURCE=0
+Environment=SHOW_WINDOW=0
+# For OAK-D Lite (DepthAI), uncomment:
+# Environment=CAMERA_SOURCE=depthai
+# Environment=OAK_RGB_RES=1080
+# Environment=OAK_FPS=30
+# Optional capture hints
+# Environment=FRAME_WIDTH=640
+# Environment=FRAME_HEIGHT=480
+# Environment=FRAME_FPS=30
+# MQTT (optional)
+# Environment=DRONE_ID=%H
+# Environment=MQTT_URL=mqtt://broker.local:1883
+# Environment=MQTT_USER=your-user
+# Environment=MQTT_PASS=your-pass
+# Environment=MQTT_TOPIC=drone/%H/events
+# Environment=MQTT_QOS=1
+# Environment=MQTT_CAFILE=/etc/ssl/certs/ca-certificates.crt
+ExecStart=/usr/bin/python3 /home/pi/SeniorDesignFloomba/PD_main.py
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

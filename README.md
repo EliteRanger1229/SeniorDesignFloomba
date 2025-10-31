@@ -16,7 +16,6 @@ Drone (PD_main.py) → MQTT broker ← Relay (mqtt_relay.py) → Browser (`/even
 - `PD_main.py` — detector + local SSE server. Publishes MQTT if configured.
 - `mqtt_relay.py` — subscribes to MQTT and rebroadcasts as SSE + serves UI.
 - `web/index.html` — dashboard (now supports filtering by `drone_id`).
-- `Dockerfile.relay` — container for the relay.
 - `MobileNetSSD_deploy.prototxt`, `MobileNetSSD_deploy.caffemodel` — DNN model.
 
 ## MQTT Topics & Payload
@@ -36,13 +35,17 @@ Drone (PD_main.py) → MQTT broker ← Relay (mqtt_relay.py) → Browser (`/even
 
 ## Running on the Drone (Raspberry Pi)
 
+For a Pi-focused, step-by-step guide (including libcamera and systemd), see `RaspberryPi.md`.
+
 1) Dependencies
 
 - Python 3.9+
-- OpenCV (already used here) and paho-mqtt for telemetry:
+- OpenCV (already used here), DepthAI for OAK‑D Lite, and paho‑mqtt for telemetry:
 
 ```bash
 pip install paho-mqtt
+# OAK-D Lite support (DepthAI)
+pip install depthai
 # If needed for dev machines: pip install opencv-python
 ```
 
@@ -61,15 +64,16 @@ export MQTT_CAFILE='/path/to/ca.crt'               # optional for TLS
 3) Run
 
 ```bash
+export CAMERA_SOURCE=depthai   # for OAK-D Lite (optional)
 python3 PD_main.py
 ```
 
 - Local dashboard: `http://<drone-ip>:8000` → connects to `/events`.
 - MQTT: publishes events if `MQTT_URL` is set. Resilient to drops.
 
-## Running the Public Relay (VM or Container)
+## Running the Public Relay (Python)
 
-Option A — Python directly:
+Run the relay as a simple Python process:
 
 ```bash
 pip install paho-mqtt
@@ -83,45 +87,6 @@ python3 mqtt_relay.py
 ```
 
 Open `http://<relay-host>:8080`.
-
-Option B — Docker:
-
-```bash
-docker build -f Dockerfile.relay -t mqtt-relay .
-docker run --rm -p 8080:8080 \
-  -e MQTT_URL='mqtts://broker.example.com:8883' \
-  -e MQTT_USER='your-user' -e MQTT_PASS='your-pass' \
-  -e MQTT_CAFILE='/etc/ssl/certs/ca-certificates.crt' \
-  mqtt-relay
-```
-
-Supply a CA file inside the image or mount it as needed.
-
-Option C — Docker Compose (recommended)
-
-1) Copy and edit the sample env
-
-```bash
-cp .env.example .env
-# Edit .env and set MQTT_URL, MQTT_USER, MQTT_PASS, RELAY_HOST_PORT
-# If using a custom CA, set MQTT_CAFILE_HOST and uncomment the volume + MQTT_CAFILE in docker-compose.yml
-```
-
-2) Bring up the relay
-
-```bash
-docker compose up -d --build
-```
-
-3) Open the UI
-
-```
-http://localhost:${RELAY_HOST_PORT}
-```
-
-Notes:
-- If port 8080 is busy, set `RELAY_HOST_PORT` in `.env` (e.g., 8081).
-- For a private CA, set `MQTT_CAFILE_HOST` in `.env`, uncomment the volume in `docker-compose.yml`, and set `MQTT_CAFILE=/ca.crt` in the service environment.
 
 ## Broker Notes
 
