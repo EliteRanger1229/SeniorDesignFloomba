@@ -1,0 +1,6 @@
+# Core runtime dependencies for local webcam + MQTT
+opencv-python
+paho-mqtt
+
+# Optional: OAK-D / DepthAI camera support (uncomment if needed)
+# depthai
