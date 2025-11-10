@@ -19,6 +19,9 @@
       .log { max-height: 240px; overflow: auto; }
       .footer { margin-top: 1rem; font-size: 0.9rem; color: #9ca3af; }
       a { color: #93c5fd; }
+      .kv { display: grid; grid-template-columns: 180px 1fr; gap: 0.25rem 0.5rem; font-size: 0.9rem; }
+      .btn { background:#0b1220; color:#e2e8f0; border:1px solid #111827; border-radius:6px; padding:0.35rem 0.6rem; cursor:pointer; }
+      details summary { cursor: pointer; }
     </style>
   </head>
   <body>
@@ -49,6 +52,34 @@
         <div id="log"></div>
       </div>
 
+      <details class="box" style="margin-top:1rem" id="debugBox">
+        <summary>Debug / Diagnostics</summary>
+        <div class="kv" style="margin-top:0.5rem">
+          <div class="muted">Page URL</div>
+          <div id="dbg-url"></div>
+
+          <div class="muted">SSE State</div>
+          <div id="dbg-ready">—</div>
+
+          <div class="muted">Connection</div>
+          <div id="dbg-conn">—</div>
+
+          <div class="muted">Reconnect Attempts</div>
+          <div id="dbg-retry">0</div>
+
+          <div class="muted">Last Event Age</div>
+          <div id="dbg-age">—</div>
+
+          <div class="muted">Last Error</div>
+          <div id="dbg-err">—</div>
+        </div>
+        <div style="margin-top:0.75rem; display:flex; gap:0.5rem; flex-wrap:wrap;">
+          <button class="btn" id="btn-diag">Run Diagnostics</button>
+          <button class="btn" id="btn-clear">Clear Log</button>
+        </div>
+        <div class="muted" style="margin-top:0.5rem">Diagnostics perform quick GET checks to <code>/</code> and <code>/events</code> (with a short timeout) and report HTTP status or errors.</div>
+      </details>
+
       <div class="footer">
         Connected to <code>/events</code>. Keep this tab open to receive alerts.
       </div>
@@ -65,9 +96,27 @@
       const logEl = document.getElementById('log');
       const beep = document.getElementById('beep');
       const filterEl = document.getElementById('filter');
+      const dbgUrl = document.getElementById('dbg-url');
+      const dbgReady = document.getElementById('dbg-ready');
+      const dbgConn = document.getElementById('dbg-conn');
+      const dbgRetry = document.getElementById('dbg-retry');
+      const dbgErr = document.getElementById('dbg-err');
+      const dbgAge = document.getElementById('dbg-age');
+      const btnDiag = document.getElementById('btn-diag');
+      const btnClear = document.getElementById('btn-clear');
 
       let count = 0;
       const drones = new Set();
+      let lastEventTs = 0; // seconds since epoch
+      let reconnects = 0;
+      let lastErrorMsg = '';
+
+      function readyStateText(n) { return n === 0 ? 'CONNECTING' : n === 1 ? 'OPEN' : n === 2 ? 'CLOSED' : String(n); }
+      function fmtAge(sec) {
+        if (!sec) return '—';
+        const d = Math.max(0, Math.floor(Date.now()/1000 - sec));
+        return d + 's ago';
+      }
       function ensureDroneOption(id) {
         if (!id || drones.has(id)) return;
         drones.add(id);
@@ -91,6 +140,7 @@
         const div = document.createElement('div');
         div.textContent = msg;
         logEl.prepend(div);
+        try { console.log('[UI]', msg); } catch {}
       }
 
       // Connect to SSE endpoint
@@ -98,15 +148,24 @@
       es.onopen = () => {
         setStatusOk();
         log('Connected');
+        if (dbgConn) dbgConn.textContent = 'Connected';
+        if (dbgReady) dbgReady.textContent = readyStateText(es.readyState);
       };
       es.onerror = () => {
         statusEl.className = 'status';
         statusEl.textContent = 'Disconnected — retrying…';
+        reconnects += 1; if (dbgRetry) dbgRetry.textContent = String(reconnects);
+        lastErrorMsg = 'SSE error (network/server). Auto-retrying.';
+        if (dbgErr) dbgErr.textContent = lastErrorMsg;
+        if (dbgConn) dbgConn.textContent = 'Disconnected (retrying)';
+        if (dbgReady) dbgReady.textContent = readyStateText(es.readyState);
+        log('SSE error — will retry');
       };
       es.onmessage = (e) => {
         try {
           const data = JSON.parse(e.data);
           if (data && data.type === 'person_detected') {
+            lastEventTs = data.ts || Math.floor(Date.now()/1000);
             const droneId = data.drone_id || 'unknown';
             ensureDroneOption(droneId);
             const selected = filterEl.value;
@@ -134,7 +193,34 @@
         lastEl.textContent = '—';
         setStatusOk();
       });
+
+      // Periodic UI diagnostics and helpers
+      if (dbgUrl) dbgUrl.textContent = window.location.href;
+      setInterval(() => { if (dbgAge) dbgAge.textContent = fmtAge(lastEventTs); if (dbgReady) dbgReady.textContent = readyStateText(es.readyState); }, 1000);
+
+      // Diagnostics button: quick GETs with short timeouts
+      btnDiag?.addEventListener('click', async () => {
+        function timeout(ms) { const c = new AbortController(); setTimeout(()=>c.abort(), ms); return c; }
+        try {
+          const r = await fetch('/', { signal: timeout(3000).signal });
+          log(`Diag: GET / -> ${r.status}`);
+        } catch (e) { log(`Diag: GET / failed: ${e && e.name ? e.name : 'error'}`); }
+        try {
+          const r2 = await fetch('/events', { headers: { 'Accept':'text/event-stream' }, signal: timeout(3000).signal });
+          log(`Diag: GET /events -> ${r2.status}`);
+        } catch (e) { log(`Diag: GET /events failed: ${e && e.name ? e.name : 'error'}`); }
+      });
+
+      // Clear log button
+      btnClear?.addEventListener('click', () => { logEl.innerHTML = ''; });
+
+      // Auto-open debug when ?debug=1
+      try {
+        const u = new URL(window.location.href);
+        if (u.searchParams.get('debug') === '1') {
+          document.getElementById('debugBox').open = true;
+        }
+      } catch {}
     </script>
   </body>
   </html>
-
